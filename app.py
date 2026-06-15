@@ -1,5 +1,5 @@
 """
-ThermoLens — Native GUI Temperature Monitor
+ThermoLens — Native GUI Temperature Monitor (Optimized Version)
 Lightweight system tray app with customtkinter.
 """
 
@@ -9,10 +9,7 @@ import ctypes
 import time
 import math
 import platform
-import subprocess
 import threading
-import random
-import json
 from collections import deque
 
 def resource_path(relative_path):
@@ -46,10 +43,10 @@ if not is_admin():
 # ──────────────────────────────────────────────
 # Imports that need admin / come after guard
 # ──────────────────────────────────────────────
-import psutil
-import customtkinter as ctk
-import pystray
-from PIL import Image, ImageDraw
+import psutil  # noqa: E402
+import customtkinter as ctk  # noqa: E402
+import pystray  # noqa: E402
+from PIL import Image  # noqa: E402
 
 # ──────────────────────────────────────────────
 # Temperature back-ends
@@ -59,8 +56,6 @@ _HAS_HARDWARE_MONITOR = False
 try:
     from PyLibreHardwareMonitor import Computer
     _HM = Computer()
-    # In PyLibreHardwareMonitor, the monitor auto-starts. 
-    # We just need to mark it as successful.
     _HAS_HARDWARE_MONITOR = True
 except Exception as e:
     print(f"Warning: Hardware monitor failed to load ({e}). Using fallback methods.")
@@ -88,15 +83,21 @@ def get_system_info() -> str:
         _SYSTEM_INFO = platform.processor() or platform.machine()
     return _SYSTEM_INFO
 
-# (Removed nvidia_gpu_temp as subprocess was causing massive lag)
-
 # ──────────────────────────────────────────────
 # Demo-mode simulator (smooth + noisy sine)
 # ──────────────────────────────────────────────
-_rng = random.Random(42)
-_sim_start = time.time()
+_rng = None
+_sim_start = 0.0
+
+def init_demo_mode():
+    global _rng, _sim_start
+    import random
+    _rng = random.Random(42)
+    _sim_start = time.time()
 
 def _sim_temp(base: float, amplitude: float, period: float, noise: float) -> float:
+    if _rng is None:
+        init_demo_mode()
     elapsed = time.time() - _sim_start
     value = base + amplitude * math.sin(2 * math.pi * elapsed / period)
     value += _rng.gauss(0, noise)
@@ -182,7 +183,6 @@ current_stats = {
 
 def data_poller():
     global total_energy_kwh
-    # Pre-seed psutil
     psutil.cpu_percent(interval=None)
     last_time = time.time()
     
@@ -191,15 +191,12 @@ def data_poller():
             if _HAS_HARDWARE_MONITOR and _HM:
                 try:
                     _HM._update_monitor()
-                except:
+                except Exception:
                     pass
                     
             c_temp = read_cpu_temp()
             g_temp = read_gpu_temp()
             
-            # Use hottest GPU reading
-            g_primary = g_temp
-                
             cpu_pct = psutil.cpu_percent(interval=None)
             ram = psutil.virtual_memory()
             p_w = read_power()
@@ -212,12 +209,14 @@ def data_poller():
                 joules = p_w * dt
                 total_energy_kwh += (joules / 3600000.0)
             
-            current_stats["cpu_temp"] = round(c_temp, 1)
-            current_stats["gpu_temp"] = round(g_primary, 1)
-            current_stats["cpu_usage"] = round(cpu_pct, 1)
-            current_stats["ram_usage"] = round(ram.percent, 1)
-            current_stats["sys_power"] = round(p_w, 1)
-            current_stats["total_kwh"] = total_energy_kwh
+            current_stats.update({
+                "cpu_temp": round(c_temp, 1),
+                "gpu_temp": round(g_temp, 1),
+                "cpu_usage": round(cpu_pct, 1),
+                "ram_usage": round(ram.percent, 1),
+                "sys_power": round(p_w, 1),
+                "total_kwh": total_energy_kwh
+            })
             
             cpu_history.append(current_stats["cpu_temp"])
             gpu_history.append(current_stats["gpu_temp"])
@@ -303,37 +302,33 @@ class ThermoLensGUI(ctk.CTk):
         self.geometry("700x750")
         self.resizable(False, False)
         
-        # Set AppUserModelID so taskbar uses our icon
         if platform.system() == "Windows":
             try:
                 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("thermolens.app.v1")
             except Exception:
                 pass
                 
-        # Set Window Icon
         try:
             self.iconbitmap(resource_path("icon.ico"))
-        except Exception as e:
+        except Exception:
             pass
         
-        # Withdraw immediately so it starts in tray hidden
         self.withdraw()
         self.protocol("WM_DELETE_WINDOW", self.hide_window)
         
         self.configure(fg_color=("gray95", "#0a0e1a"))
         
-        # Main Scrollable Frame
-        self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        # Main Frame (non-scrollable to save memory & widgets since window is fixed 700x750)
+        self.scroll_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.scroll_frame.pack(fill="both", expand=True)
         
         # Header
         header = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=20)
+        header.pack(fill="x", padx=20, pady=12)
         
         title = ctk.CTkLabel(header, text="ThermoLens", font=("Segoe UI", 24, "bold"), text_color=("black", "white"))
         title.pack(side="left")
         
-        # History Selection
         self.history_period = 600 # default 20m
         def change_history_period(choice):
             mapping = {"1 Min": 30, "5 Min": 150, "15 Min": 450, "20 Min": 600, "30 Min": 900}
@@ -343,7 +338,6 @@ class ThermoLensGUI(ctk.CTk):
         history_menu.set("20 Min")
         history_menu.pack(side="right", padx=10)
         
-        # Theme Toggle
         def toggle_theme():
             if theme_switch.get() == 1:
                 ctk.set_appearance_mode("Light")
@@ -362,7 +356,7 @@ class ThermoLensGUI(ctk.CTk):
         
         # Stat Cards (3x2 Grid)
         grid = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        grid.pack(fill="x", padx=20, pady=10)
+        grid.pack(fill="x", padx=20, pady=6)
         grid.grid_columnconfigure((0, 1, 2), weight=1)
         
         self.cpu_card = self.create_stat_card(grid, "CPU Temp", "°C", "#06b6d4", 0, 0)
@@ -406,31 +400,27 @@ class ThermoLensGUI(ctk.CTk):
 
     def create_chart_section(self, title, color, data_source, unit="°C"):
         frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        frame.pack(fill="x", padx=20, pady=10)
+        frame.pack(fill="x", padx=20, pady=6)
         
         lbl = ctk.CTkLabel(frame, text=title, font=("Segoe UI", 12, "bold"), text_color=("black", "#e2e8f0"))
         lbl.pack(anchor="w")
         
-        # For Tkinter Canvas, bg doesn't support tuples natively, so we set it dark by default and update in draw_chart.
-        canvas = ctk.CTkCanvas(frame, height=150, highlightthickness=0)
-        canvas.pack(fill="x", pady=(5, 0))
+        canvas = ctk.CTkCanvas(frame, height=110, highlightthickness=0)
+        canvas.pack(fill="x", pady=(3, 0))
         
         canvas._data_source = data_source
         canvas._color = color
         canvas._unit = unit
         canvas._cursor_x = None
+        canvas._cached_data = []
         
         def on_motion(event):
             canvas._cursor_x = event.x
-            ds = list(canvas._data_source)
-            sliced = ds[-self.history_period:] if len(ds) > self.history_period else ds
-            self.draw_chart(canvas, sliced, canvas._color, self.history_period)
+            self.update_cursor(canvas)
             
         def on_leave(event):
             canvas._cursor_x = None
-            ds = list(canvas._data_source)
-            sliced = ds[-self.history_period:] if len(ds) > self.history_period else ds
-            self.draw_chart(canvas, sliced, canvas._color, self.history_period)
+            self.update_cursor(canvas)
             
         canvas.bind("<Motion>", on_motion)
         canvas.bind("<Leave>", on_leave)
@@ -438,67 +428,135 @@ class ThermoLensGUI(ctk.CTk):
         return canvas
 
     def draw_chart(self, canvas, data, color, max_points):
-        # Dynamic Theme Colors for Canvas
+        if not data:
+            return
+            
         is_light = ctk.get_appearance_mode() == "Light"
         bg_color = "white" if is_light else "#0f172a"
         grid_color = "#e2e8f0" if is_light else "#1e293b"
         cursor_color = "#94a3b8" if is_light else "#64748b"
         tooltip_bg = "white" if is_light else "#1e293b"
         tooltip_border = "#cbd5e1" if is_light else "#334155"
-        tooltip_text = "black" if is_light else "white"
+        tooltip_text_color = "black" if is_light else "white"
         
-        canvas.configure(bg=bg_color)
-        canvas.delete("all")
         w = canvas.winfo_width()
         h = canvas.winfo_height()
         if w < 10 or h < 10:
             return
             
+        # Initialize persistent items if needed, or if canvas resized
+        if not getattr(canvas, '_initialized', False) or getattr(canvas, '_init_w', 0) != w or getattr(canvas, '_init_h', 0) != h:
+            canvas.delete("all")
+            canvas.configure(bg=bg_color)
+            canvas._grid_line = canvas.create_line(0, h-1, w, h-1, fill=grid_color)
+            canvas._data_line = canvas.create_line(0, 0, 0, 0, fill=color, width=2, smooth=False)
+            canvas._cursor_line = canvas.create_line(0, 0, 0, 0, fill=cursor_color, dash=(4, 4), state="hidden")
+            canvas._cursor_dot = canvas.create_oval(0, 0, 0, 0, fill=color, outline=bg_color, state="hidden")
+            canvas._tooltip_rect = canvas.create_rectangle(0, 0, 0, 0, fill=tooltip_bg, outline=tooltip_border, state="hidden")
+            canvas._tooltip_text = canvas.create_text(0, 0, text="", fill=tooltip_text_color, font=("Segoe UI", 10), state="hidden")
+            canvas._initialized = True
+            canvas._init_w = w
+            canvas._init_h = h
+            canvas._theme = ctk.get_appearance_mode()
+        elif getattr(canvas, '_theme', None) != ctk.get_appearance_mode():
+            canvas.configure(bg=bg_color)
+            canvas.itemconfig(canvas._grid_line, fill=grid_color)
+            canvas.itemconfig(canvas._cursor_line, fill=cursor_color)
+            canvas.itemconfig(canvas._cursor_dot, outline=bg_color)
+            canvas.itemconfig(canvas._tooltip_rect, fill=tooltip_bg, outline=tooltip_border)
+            canvas.itemconfig(canvas._tooltip_text, fill=tooltip_text_color)
+            canvas._theme = ctk.get_appearance_mode()
+            
         max_val = max(100, max(data) + 10)
         
-        # Draw grid
-        canvas.create_line(0, h-1, w, h-1, fill=grid_color)
-        
+        # Calculate coordinates for data line
         points = []
-        for i, val in enumerate(data):
+        data_len = len(data)
+        stride = 1
+        if data_len > w:
+            stride = max(1, data_len // w)
+            
+        for i in range(0, data_len, stride):
             x = (i / max(1, max_points - 1)) * w
-            y = h - (val / max_val) * h
+            y = h - (data[i] / max_val) * h
+            points.append(x)
+            points.append(y)
+            
+        if stride > 1 and (data_len - 1) % stride != 0:
+            x = w
+            y = h - (data[-1] / max_val) * h
             points.append(x)
             points.append(y)
             
         if len(points) >= 4:
-            canvas.create_line(*points, fill=color, width=2, smooth=False)
+            canvas.coords(canvas._data_line, *points)
+            canvas.itemconfig(canvas._data_line, state="normal")
+        else:
+            canvas.itemconfig(canvas._data_line, state="hidden")
+
+    def update_cursor(self, canvas):
+        cx = getattr(canvas, '_cursor_x', None)
+        data = getattr(canvas, '_cached_data', None)
+        
+        if not getattr(canvas, '_initialized', False):
+            return
             
-        # Draw cursor if active
-        if getattr(canvas, '_cursor_x', None) is not None and data:
-            cx = canvas._cursor_x
-            if cx < 0: cx = 0
-            if cx > w: cx = w
+        if cx is not None and data:
+            w = canvas.winfo_width()
+            h = canvas.winfo_height()
+            if w < 10 or h < 10:
+                return
+                
+            max_points = self.history_period
+            max_val = max(100, max(data) + 10)
             
-            canvas.create_line(cx, 0, cx, h, fill=cursor_color, dash=(4, 4))
+            if cx < 0:
+                cx = 0
+            if cx > w:
+                cx = w
+            
+            canvas.coords(canvas._cursor_line, cx, 0, cx, h)
+            canvas.itemconfig(canvas._cursor_line, state="normal")
             
             idx = int(round((cx / w) * max(1, max_points - 1)))
             if 0 <= idx < len(data):
                 val = data[idx]
                 cy = h - (val / max_val) * h
-                canvas.create_oval(cx-3, cy-3, cx+3, cy+3, fill=color, outline=bg_color)
+                
+                canvas.coords(canvas._cursor_dot, cx-3, cy-3, cx+3, cy+3)
+                canvas.itemconfig(canvas._cursor_dot, state="normal")
                 
                 text = f"{val:.1f}{getattr(canvas, '_unit', '°C')}"
                 tw = 45
                 th = 20
                 tx = cx - tw/2
                 ty = cy - th - 8
-                if tx < 0: tx = 0
-                if tx + tw > w: tx = w - tw
-                if ty < 0: ty = cy + 8
-                canvas.create_rectangle(tx, ty, tx+tw, ty+th, fill=tooltip_bg, outline=tooltip_border)
-                canvas.create_text(tx+tw/2, ty+th/2, text=text, fill=tooltip_text, font=("Segoe UI", 10))
+                if tx < 0:
+                    tx = 0
+                if tx + tw > w:
+                    tx = w - tw
+                if ty < 0:
+                    ty = cy + 8
+                
+                canvas.coords(canvas._tooltip_rect, tx, ty, tx+tw, ty+th)
+                canvas.itemconfig(canvas._tooltip_rect, state="normal")
+                
+                canvas.coords(canvas._tooltip_text, tx+tw/2, ty+th/2)
+                canvas.itemconfig(canvas._tooltip_text, text=text, state="normal")
+            else:
+                canvas.itemconfig(canvas._cursor_dot, state="hidden")
+                canvas.itemconfig(canvas._tooltip_rect, state="hidden")
+                canvas.itemconfig(canvas._tooltip_text, state="hidden")
+        else:
+            canvas.itemconfig(canvas._cursor_line, state="hidden")
+            canvas.itemconfig(canvas._cursor_dot, state="hidden")
+            canvas.itemconfig(canvas._tooltip_rect, state="hidden")
+            canvas.itemconfig(canvas._tooltip_text, state="hidden")
 
     def update_ui(self):
         if self.mini_overlay and self.mini_overlay.winfo_exists():
             self.mini_overlay.update_data(current_stats['cpu_temp'], current_stats['gpu_temp'], current_stats['sys_power'])
             
-        # Only update if the window is visible to save CPU
         if self.state() == "normal":
             self.cpu_card.configure(text=f"{current_stats['cpu_temp']:.1f}")
             self.gpu_card.configure(text=f"{current_stats['gpu_temp']:.1f}")
@@ -506,22 +564,23 @@ class ThermoLensGUI(ctk.CTk):
             self.usage_card.configure(text=f"{current_stats['cpu_usage']:.1f}")
             self.ram_card.configure(text=f"{current_stats['ram_usage']:.1f}")
             
-            # Format kWh with more decimals if it's small
             kwh = current_stats['total_kwh']
             if kwh < 1.0:
                 self.energy_card.configure(text=f"{kwh:.4f}")
             else:
                 self.energy_card.configure(text=f"{kwh:.2f}")
             
-            # Slice the data based on user selection
-            sliced_cpu = list(cpu_history)[-self.history_period:] if len(cpu_history) > self.history_period else list(cpu_history)
-            sliced_gpu = list(gpu_history)[-self.history_period:] if len(gpu_history) > self.history_period else list(gpu_history)
-            sliced_power = list(power_history)[-self.history_period:] if len(power_history) > self.history_period else list(power_history)
+            self.cpu_canvas._cached_data = list(cpu_history)[-self.history_period:] if len(cpu_history) > self.history_period else list(cpu_history)
+            self.gpu_canvas._cached_data = list(gpu_history)[-self.history_period:] if len(gpu_history) > self.history_period else list(gpu_history)
+            self.power_canvas._cached_data = list(power_history)[-self.history_period:] if len(power_history) > self.history_period else list(power_history)
             
-            # Draw charts
-            self.draw_chart(self.cpu_canvas, sliced_cpu, "#06b6d4", self.history_period)
-            self.draw_chart(self.gpu_canvas, sliced_gpu, "#f97316", self.history_period)
-            self.draw_chart(self.power_canvas, sliced_power, "#ef4444", self.history_period)
+            self.draw_chart(self.cpu_canvas, self.cpu_canvas._cached_data, "#06b6d4", self.history_period)
+            self.draw_chart(self.gpu_canvas, self.gpu_canvas._cached_data, "#f97316", self.history_period)
+            self.draw_chart(self.power_canvas, self.power_canvas._cached_data, "#ef4444", self.history_period)
+            
+            self.update_cursor(self.cpu_canvas)
+            self.update_cursor(self.gpu_canvas)
+            self.update_cursor(self.power_canvas)
         
         self.after(2000, self.update_ui)
         
@@ -557,27 +616,20 @@ def setup_tray(app_instance):
     
     try:
         tray_image = Image.open(resource_path("icon.ico"))
-    except:
-        # Fallback empty image if missing
+    except Exception:
         tray_image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         
     icon = pystray.Icon("ThermoLens", tray_image, "ThermoLens", menu)
     icon.run()
 
 if __name__ == "__main__":
-    # Start poller thread
     t_poller = threading.Thread(target=data_poller, daemon=True)
     t_poller.start()
     
-    # Initialize GUI
     app = ThermoLensGUI()
     
-    # Start tray icon thread
     t_tray = threading.Thread(target=setup_tray, args=(app,), daemon=True)
     t_tray.start()
     
-    # Show window initially to let user know it started
     app.after(500, app.show_window)
-    
-    # Start GUI main loop
     app.mainloop()
